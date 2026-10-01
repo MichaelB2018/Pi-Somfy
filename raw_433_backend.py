@@ -41,6 +41,7 @@ class Raw433Transmitter:
         self.pigpio = pigpio_module
         self.lgpio = lgpio_module
         self.lgpio_chip = lgpio_chip
+        self._lgpio_handle = None
 
     def transmit(self, frame, repetition):
         if self.is_pi5:
@@ -49,11 +50,21 @@ class Raw433Transmitter:
             self._send_pigpio(frame, repetition)
 
     def set_idle_low(self):
-        """Pre-condition the TX GPIO low before CC1101 starts the carrier."""
+        """Drive the TX GPIO low (before CC1101 starts the carrier, and at startup)."""
         if self.is_pi5:
             self._set_idle_low_lgpio()
         else:
             self._set_idle_low_pigpio()
+
+    def close(self):
+        if self._lgpio_handle is None:
+            return
+        lgpio = self._load_lgpio()
+        handle, self._lgpio_handle = self._lgpio_handle, None
+        try:
+            lgpio.gpio_free(handle, self.config.tx_gpio)
+        finally:
+            lgpio.gpiochip_close(handle)
 
     def _load_pigpio(self):
         if self.pigpio is not None:
@@ -146,19 +157,32 @@ class Raw433Transmitter:
     def _send_lgpio(self, frame, repetition):
         lgpio = self._load_lgpio()
         tx_gpio = self.config.tx_gpio
-        h = lgpio.gpiochip_open(self.lgpio_chip)
-        claimed = False
-        try:
-            lgpio.gpio_claim_output(h, tx_gpio, 0)
-            claimed = True
+        h = self._claim_lgpio_output()
 
-            pulses = []
-            pulses.append(lgpio.pulse(1, 1, 9415))   # wake up pulse
-            pulses.append(lgpio.pulse(0, 1, 89565))  # silence
-            for i in range(2):  # hardware synchronization
+        pulses = []
+        pulses.append(lgpio.pulse(1, 1, 9415))   # wake up pulse
+        pulses.append(lgpio.pulse(0, 1, 89565))  # silence
+        for i in range(2):  # hardware synchronization
+            pulses.append(lgpio.pulse(1, 1, 2560))
+            pulses.append(lgpio.pulse(0, 1, 2560))
+        pulses.append(lgpio.pulse(1, 1, 4550))   # software synchronization
+        pulses.append(lgpio.pulse(0, 1, 640))
+
+        for i in range(0, 56):  # manchester encoding of payload data
+            if ((frame[int(i / 8)] >> (7 - (i % 8))) & 1):
+                pulses.append(lgpio.pulse(0, 1, 640))
+                pulses.append(lgpio.pulse(1, 1, 640))
+            else:
+                pulses.append(lgpio.pulse(1, 1, 640))
+                pulses.append(lgpio.pulse(0, 1, 640))
+
+        pulses.append(lgpio.pulse(0, 1, 30415))  # interframe gap
+
+        for j in range(1, repetition):  # repeating frames
+            for i in range(7):  # hardware synchronization
                 pulses.append(lgpio.pulse(1, 1, 2560))
                 pulses.append(lgpio.pulse(0, 1, 2560))
-            pulses.append(lgpio.pulse(1, 1, 4550))   # software synchronization
+            pulses.append(lgpio.pulse(1, 1, 4550))  # software synchronization
             pulses.append(lgpio.pulse(0, 1, 640))
 
             for i in range(0, 56):  # manchester encoding of payload data
@@ -171,41 +195,28 @@ class Raw433Transmitter:
 
             pulses.append(lgpio.pulse(0, 1, 30415))  # interframe gap
 
-            for j in range(1, repetition):  # repeating frames
-                for i in range(7):  # hardware synchronization
-                    pulses.append(lgpio.pulse(1, 1, 2560))
-                    pulses.append(lgpio.pulse(0, 1, 2560))
-                pulses.append(lgpio.pulse(1, 1, 4550))  # software synchronization
-                pulses.append(lgpio.pulse(0, 1, 640))
+        lgpio.tx_wave(h, tx_gpio, pulses)
+        while lgpio.tx_busy(h, tx_gpio, lgpio.TX_WAVE):
+            time.sleep(0.001)
+        lgpio.gpio_write(h, tx_gpio, 0)
 
-                for i in range(0, 56):  # manchester encoding of payload data
-                    if ((frame[int(i / 8)] >> (7 - (i % 8))) & 1):
-                        pulses.append(lgpio.pulse(0, 1, 640))
-                        pulses.append(lgpio.pulse(1, 1, 640))
-                    else:
-                        pulses.append(lgpio.pulse(1, 1, 640))
-                        pulses.append(lgpio.pulse(0, 1, 640))
+    def _claim_lgpio_output(self):
+        """Claim the TX GPIO as a low output once and keep the claim.
 
-                pulses.append(lgpio.pulse(0, 1, 30415))  # interframe gap
-
-            lgpio.tx_wave(h, tx_gpio, pulses)
-            while lgpio.tx_busy(h, tx_gpio, lgpio.TX_WAVE):
-                time.sleep(0.001)
-        finally:
-            if claimed:
-                lgpio.gpio_free(h, tx_gpio)
-            lgpio.gpiochip_close(h)
+        Releasing it would hand the line back to the kernel as a floating
+        input, which makes the 433 MHz module transmit continuously (#154).
+        """
+        if self._lgpio_handle is None:
+            lgpio = self._load_lgpio()
+            handle = lgpio.gpiochip_open(self.lgpio_chip)
+            try:
+                lgpio.gpio_claim_output(handle, self.config.tx_gpio, 0)
+            except Exception:
+                lgpio.gpiochip_close(handle)
+                raise
+            self._lgpio_handle = handle
+        return self._lgpio_handle
 
     def _set_idle_low_lgpio(self):
         lgpio = self._load_lgpio()
-        tx_gpio = self.config.tx_gpio
-        h = lgpio.gpiochip_open(self.lgpio_chip)
-        claimed = False
-        try:
-            lgpio.gpio_claim_output(h, tx_gpio, 0)
-            claimed = True
-            lgpio.gpio_write(h, tx_gpio, 0)
-        finally:
-            if claimed:
-                lgpio.gpio_free(h, tx_gpio)
-            lgpio.gpiochip_close(h)
+        lgpio.gpio_write(self._claim_lgpio_output(), self.config.tx_gpio, 0)

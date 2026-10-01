@@ -174,10 +174,33 @@ class Raw433BackendTest(unittest.TestCase):
                 ("gpiochip_open", 4),
                 ("gpio_claim_output", "handle", 4, 0),
                 ("gpio_write", "handle", 4, 0),
-                ("gpio_free", "handle", 4),
-                ("gpiochip_close", "handle"),
             ],
             fake_lgpio.calls,
+        )
+
+    def test_lgpio_transmitter_keeps_tx_claimed_between_frames(self):
+        fake_lgpio = FakeLgpio()
+        transmitter = Raw433Transmitter(
+            Raw433Config(tx_gpio=4),
+            is_pi5=True,
+            lgpio_module=fake_lgpio,
+            lgpio_chip=4,
+        )
+        frame = bytearray([0] * 7)
+
+        transmitter.transmit(frame, 1)
+        transmitter.transmit(frame, 1)
+
+        self.assertEqual(1, len([c for c in fake_lgpio.calls if c[0] == "gpiochip_open"]))
+        self.assertEqual(1, len([c for c in fake_lgpio.calls if c[0] == "gpio_claim_output"]))
+        self.assertNotIn(("gpio_free", "handle", 4), fake_lgpio.calls)
+        self.assertEqual(("gpio_write", "handle", 4, 0), fake_lgpio.calls[-1])
+
+        transmitter.close()
+
+        self.assertEqual(
+            [("gpio_free", "handle", 4), ("gpiochip_close", "handle")],
+            fake_lgpio.calls[-2:],
         )
 
 

@@ -128,9 +128,12 @@ class CC1101Transmitter:
         except Exception:
             pass
 
-    def transmit(self, frame, repetition):
+    def set_idle_low(self):
         if hasattr(self.waveform_transmitter, "set_idle_low"):
             self.waveform_transmitter.set_idle_low()
+
+    def transmit(self, frame, repetition):
+        self.set_idle_low()
         try:
             with self.radio as radio:
                 radio.set_base_frequency_hertz(self.config.frequency_hz)

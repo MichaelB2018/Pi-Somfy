@@ -18,6 +18,7 @@ import threading
 import time
 
 from config import MyLog
+from pi_model import detect_pi5
 
 # GPIO libraries are only needed on real hardware. Import lazily, and detect
 # the Pi model independently below, so the decoder classes stay unit-testable
@@ -34,28 +35,9 @@ except ImportError:
     lgpio = None
 
 
-# ── Pi model detection (copied from operateShutters.py — see note above) ────
-IS_PI5 = False
+# ── Pi model detection (see note above) ────────────────────────────────────
+IS_PI5 = detect_pi5() if sys.platform.startswith("linux") else False
 LGPIO_CHIP = 4   # gpiochip number for lgpio (Pi 5): 4 on older kernels, 0 on newer
-if sys.platform.startswith("linux"):
-    try:
-        with open('/proc/device-tree/model', 'r') as f:
-            _model = f.read()
-        if 'Pi 5' in _model:
-            IS_PI5 = True
-    except (FileNotFoundError, PermissionError):
-        pass
-    if not IS_PI5 and os.path.exists('/dev/gpiochip4'):
-        IS_PI5 = True
-    if not IS_PI5:
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                for line in f:
-                    if line.startswith('Revision') and any(rev in line for rev in ['c04170', 'd04170', 'c04171', 'd04171']):
-                        IS_PI5 = True
-                        break
-        except (FileNotFoundError, PermissionError):
-            pass
 
 
 # ── RTS protocol constants (must match Shutter.sendCommand exactly) ─────────

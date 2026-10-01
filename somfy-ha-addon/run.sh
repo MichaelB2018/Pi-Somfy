@@ -87,7 +87,7 @@ sed -i "s|^LogLocation.*|LogLocation = /data/|" "${CONFIG_FILE}"
 
 # Detect Pi model — Pi 5 uses lgpio (no daemon), older Pis use pigpio (needs pigpiod)
 # /proc/device-tree/model may not be accessible inside the container; fall back to
-# checking for /dev/gpiochip4 (RP1 chip, Pi 5 only) or the CPU revision code.
+# the CPU revision code, then to the RP1 chip device.
 IS_PI5=false
 PI_MODEL="unknown"
 if [ -f /proc/device-tree/model ]; then
@@ -98,13 +98,19 @@ bashio::log.info "Detected board: ${PI_MODEL}"
 # Log available gpiochip devices for diagnostics
 bashio::log.info "Available gpiochip devices: $(ls /dev/gpiochip* 2>/dev/null || echo 'none')"
 
-if echo "${PI_MODEL}" | grep -q "Pi 5"; then
-    IS_PI5=true
-elif [ -e /dev/gpiochip4 ]; then
-    bashio::log.info "/dev/gpiochip4 found — assuming Pi 5"
-    IS_PI5=true
+if [ -n "${PI_MODEL}" ] && [ "${PI_MODEL}" != "unknown" ]; then
+    # The device tree knows exactly which board this is — trust it and skip the
+    # weaker heuristics below, which misdetect older Pis as a Pi 5 (issue #180).
+    if echo "${PI_MODEL}" | grep -qE "Pi 5|Compute Module 5"; then
+        IS_PI5=true
+    fi
 elif grep -q "^Revision.*[[:space:]].*[cd]0[34]17" /proc/cpuinfo 2>/dev/null; then
     bashio::log.info "Pi 5 CPU revision detected in /proc/cpuinfo"
+    IS_PI5=true
+elif [ -e /dev/gpiochip4 ] && [ "$(readlink -f /dev/gpiochip4)" != "$(readlink -f /dev/gpiochip0)" ]; then
+    # Bookworm ships a /dev/gpiochip4 -> gpiochip0 compatibility symlink on
+    # older boards, so only a genuinely separate chip means RP1/Pi 5.
+    bashio::log.info "/dev/gpiochip4 is a separate chip — assuming Pi 5"
     IS_PI5=true
 fi
 

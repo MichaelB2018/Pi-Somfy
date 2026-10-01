@@ -58,30 +58,10 @@ import socket
 # ── Pi model detection & GPIO library selection ─────────────────────────────
 # Pi 5 uses the RP1 southbridge chip which is incompatible with pigpio.
 # We use lgpio (which works via /dev/gpiochip*) on Pi 5, and pigpio elsewhere.
-# /proc/device-tree/model may not be accessible inside Docker containers;
-# fall back to checking for /dev/gpiochip4 (RP1 chip, Pi 5 only) or the
-# CPU revision code in /proc/cpuinfo.
-IS_PI5 = False
+from pi_model import detect_pi5
+
+IS_PI5 = False if WINDOWS else detect_pi5()
 LGPIO_CHIP = 4   # gpiochip number for lgpio (Pi 5): 4 on older kernels, 0 on newer
-if not WINDOWS:
-    try:
-        with open('/proc/device-tree/model', 'r') as f:
-            _model = f.read()
-        if 'Pi 5' in _model:
-            IS_PI5 = True
-    except (FileNotFoundError, PermissionError):
-        pass
-    if not IS_PI5 and os.path.exists('/dev/gpiochip4'):
-        IS_PI5 = True
-    if not IS_PI5:
-        try:
-            with open('/proc/cpuinfo', 'r') as f:
-                for line in f:
-                    if line.startswith('Revision') and any(rev in line for rev in ['c04170', 'd04170', 'c04171', 'd04171']):
-                        IS_PI5 = True
-                        break
-        except (FileNotFoundError, PermissionError):
-            pass
 
 if IS_PI5:
     import lgpio
@@ -558,6 +538,14 @@ class operateShutters(MyLog):
             sys.exit(1)
 
         self.shutter = Shutter(log = self.log, config = self.config)
+
+        # The TX GPIO comes up as a floating input, which makes the 433 MHz
+        # module transmit continuously until the first command is sent (#154).
+        if not WINDOWS:
+            try:
+                self.shutter.rf_transmitter.set_idle_low()
+            except Exception as e:
+                self.LogError("Could not drive the TX GPIO low at startup: {}".format(e))
 
         self.schedule = Schedule(log = self.log, config = self.config)
         self.scheduler = None
